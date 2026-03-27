@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { format, parseISO } from 'date-fns';
-import { X, Check, Minus, Trash2, Pencil } from 'lucide-react';
+import { X, Check, Trash2, Pencil } from 'lucide-react';
 import { CellState, Person, usePlans } from '../context/PlansContext';
 
 interface AvailabilityGridProps {
@@ -8,6 +8,8 @@ interface AvailabilityGridProps {
   people: Person[];
   dates: string[];
   excludedPeople: string[];
+  selectedCells: Set<string>;
+  setSelectedCells: React.Dispatch<React.SetStateAction<Set<string>>>;
 }
 
 function cycleState(current: CellState): CellState {
@@ -64,16 +66,16 @@ export function AvailabilityGrid({
   people,
   dates,
   excludedPeople,
+  selectedCells,
+  setSelectedCells,
 }: AvailabilityGridProps) {
   const {
     updateCellState,
     updatePersonNote,
-    bulkUpdateCells,
     removePerson,
     renamePerson,
   } = usePlans();
 
-  const [selectedCells, setSelectedCells] = useState<Set<string>>(new Set());
   const dragStartRef = useRef<string | null>(null);
   const isDraggingRef = useRef(false);
 
@@ -99,23 +101,26 @@ export function AvailabilityGrid({
       isDraggingRef.current = false;
       setSelectedCells(new Set([cellKey(personId, date)]));
     },
-    []
+    [setSelectedCells]
   );
 
-  const handleCellMouseEnter = useCallback((personId: string, date: string) => {
-    if (dragStartRef.current !== null) {
-      const key = cellKey(personId, date);
-      if (key !== dragStartRef.current) {
-        isDraggingRef.current = true;
+  const handleCellMouseEnter = useCallback(
+    (personId: string, date: string) => {
+      if (dragStartRef.current !== null) {
+        const key = cellKey(personId, date);
+        if (key !== dragStartRef.current) {
+          isDraggingRef.current = true;
+        }
+        setSelectedCells((prev) => {
+          const next = new Set(prev);
+          next.add(dragStartRef.current!);
+          next.add(key);
+          return next;
+        });
       }
-      setSelectedCells((prev) => {
-        const next = new Set(prev);
-        next.add(dragStartRef.current!);
-        next.add(key);
-        return next;
-      });
-    }
-  }, []);
+    },
+    [setSelectedCells]
+  );
 
   const handleCellMouseUp = useCallback(
     (personId: string, date: string) => {
@@ -126,7 +131,7 @@ export function AvailabilityGrid({
       }
       dragStartRef.current = null;
     },
-    [people, planId, updateCellState]
+    [people, planId, setSelectedCells, updateCellState]
   );
 
   useEffect(() => {
@@ -137,23 +142,23 @@ export function AvailabilityGrid({
     return () => window.removeEventListener('mouseup', handleGlobalMouseUp);
   }, []);
 
-  const clearSelection = () => setSelectedCells(new Set());
-
-  const bulkSet = (state: CellState | 'blank') => {
-    const cells = Array.from(selectedCells).map((k) => {
-      const [personId, date] = k.split(':');
-      return { personId, date };
-    });
-    bulkUpdateCells(planId, cells, state);
-    setSelectedCells(new Set());
-  };
-
   const excludedSet = new Set(excludedPeople);
 
-  const everyoneAvailable = (date: string): boolean => {
+  const everyoneStatus = (date: string): CellState => {
     const included = people.filter((p) => !excludedSet.has(p.id));
-    if (included.length === 0) return false;
-    return included.every((p) => (p.availability[date] ?? 'blank') === 'available');
+    if (included.length === 0) return 'blank';
+
+    const states = included.map((p) => p.availability[date] ?? 'blank');
+
+    if (states.some((state) => state === 'unavailable')) {
+      return 'unavailable';
+    }
+
+    if (states.some((state) => state === 'available')) {
+      return 'available';
+    }
+
+    return 'blank';
   };
 
   const handleNoteChange = (personId: string, value: string) => {
@@ -186,7 +191,8 @@ export function AvailabilityGrid({
 
     const trimmed = editingPersonName.trim();
 
-    if (!trimmed) {
+    if (!trimmed) return;
+    if (trimmed === originalName.trim()) {
       cancelEditingPerson();
       return;
     }
@@ -196,57 +202,21 @@ export function AvailabilityGrid({
     );
 
     if (duplicateExists) {
-      setEditingPersonName(originalName);
-      cancelEditingPerson();
       return;
     }
 
-    if (trimmed === originalName.trim()) {
-      cancelEditingPerson();
-      return;
-    }
+    setIsSavingPersonName(true);
+    const success = await renamePerson(planId, personId, trimmed);
+    setIsSavingPersonName(false);
 
-    try {
-      setIsSavingPersonName(true);
-      await renamePerson(planId, personId, trimmed);
-    } finally {
+    if (success) {
       cancelEditingPerson();
     }
   };
 
   return (
-    <div className="flex flex-col gap-0 h-full">
-      {selectedCells.size > 1 && (
-        <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg mb-2 flex-shrink-0">
-          <span className="text-blue-700 text-sm mr-1">{selectedCells.size} cells selected</span>
-          <button
-            onClick={() => bulkSet('available')}
-            className="flex items-center gap-1 px-2 py-1 bg-green-100 hover:bg-green-200 text-green-700 rounded text-sm transition-colors"
-          >
-            <Check size={13} /> Mark Available
-          </button>
-          <button
-            onClick={() => bulkSet('unavailable')}
-            className="flex items-center gap-1 px-2 py-1 bg-red-100 hover:bg-red-200 text-red-600 rounded text-sm transition-colors"
-          >
-            <X size={13} /> Mark Unavailable
-          </button>
-          <button
-            onClick={() => bulkSet('blank')}
-            className="flex items-center gap-1 px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded text-sm transition-colors"
-          >
-            <Minus size={13} /> Clear
-          </button>
-          <button
-            onClick={clearSelection}
-            className="ml-auto text-blue-400 hover:text-blue-600 text-sm transition-colors"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
-
-      <div className="flex-1 overflow-auto rounded-xl border border-gray-200 shadow-sm">
+    <div className="h-full">
+      <div className="h-full overflow-auto rounded-xl border border-gray-200 shadow-sm">
         <table className="border-collapse" style={{ minWidth: 'max-content' }}>
           <thead>
             <tr>
@@ -418,7 +388,8 @@ export function AvailabilityGrid({
               </td>
 
               {dates.map((date) => {
-                const allAvail = everyoneAvailable(date);
+                const everyoneState = everyoneStatus(date);
+
                 return (
                   <td
                     key={date}
@@ -427,11 +398,17 @@ export function AvailabilityGrid({
                   >
                     <div
                       className={`w-full h-full flex items-center justify-center rounded ${
-                        allAvail ? 'bg-green-100' : 'bg-gray-50'
+                        everyoneState === 'available'
+                          ? 'bg-green-100'
+                          : everyoneState === 'unavailable'
+                            ? 'bg-red-100'
+                            : 'bg-gray-50'
                       }`}
                     >
-                      {allAvail ? (
+                      {everyoneState === 'available' ? (
                         <Check size={14} className="text-green-600 stroke-[2.5]" />
+                      ) : everyoneState === 'unavailable' ? (
+                        <X size={14} className="text-red-600 stroke-[2.5]" />
                       ) : null}
                     </div>
                   </td>

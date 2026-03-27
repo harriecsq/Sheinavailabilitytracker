@@ -20,12 +20,13 @@ import {
   Trash2,
   Check,
   X,
+  Minus,
   CalendarRange,
   ChevronDown,
   ChevronUp,
   Calendar,
 } from 'lucide-react';
-import { usePlans } from '../context/PlansContext';
+import { CellState, usePlans } from '../context/PlansContext';
 import { AvailabilityGrid } from '../components/AvailabilityGrid';
 import { DateRangePicker } from '../components/DateRangePicker';
 
@@ -42,7 +43,7 @@ function getDates(startDate: string, endDate: string): string[] {
     return eachDayOfInterval({
       start: parseISO(startDate),
       end: parseISO(endDate),
-    }).map(d => format(d, 'yyyy-MM-dd'));
+    }).map((d) => format(d, 'yyyy-MM-dd'));
   } catch {
     return [];
   }
@@ -73,12 +74,17 @@ export function PlanCalendarScreen() {
     addPerson,
     deletePlan,
     updatePlan,
+    renamePerson,
+    bulkUpdateCells,
   } = usePlans();
 
-  const plan = plans.find(p => p.id === planId);
+  const plan = plans.find((p) => p.id === planId);
 
   const [newPersonName, setNewPersonName] = useState('');
   const [addError, setAddError] = useState('');
+
+  const [editingPersonId, setEditingPersonId] = useState<string | null>(null);
+  const [editingPersonName, setEditingPersonName] = useState('');
 
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
@@ -91,79 +97,22 @@ export function PlanCalendarScreen() {
   const [filterOpen, setFilterOpen] = useState(true);
 
   const [localExcludedPeople, setLocalExcludedPeople] = useState<string[]>([]);
+  const [selectedCells, setSelectedCells] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     setLocalExcludedPeople([]);
+    setEditingPersonId(null);
+    setEditingPersonName('');
+    setSelectedCells(new Set());
   }, [planId]);
 
   useEffect(() => {
     if (!plan) return;
 
-    setLocalExcludedPeople(prev =>
-      prev.filter(id => plan.people.some(person => person.id === id))
+    setLocalExcludedPeople((prev) =>
+      prev.filter((id) => plan.people.some((person) => person.id === id))
     );
   }, [plan]);
-
-  const dates = useMemo(() => {
-    if (!plan) return [];
-    return getDates(plan.startDate, plan.endDate);
-  }, [plan?.startDate, plan?.endDate]);
-
-  const excludedSet = useMemo(() => new Set(localExcludedPeople), [localExcludedPeople]);
-
-  const includedPeople = useMemo(() => {
-    if (!plan) return [];
-    return plan.people.filter(person => !excludedSet.has(person.id));
-  }, [plan, excludedSet]);
-
-  const planInterval = useMemo(() => {
-    if (!plan) return null;
-    return {
-      start: parseISO(plan.startDate),
-      end: parseISO(plan.endDate),
-    };
-  }, [plan?.startDate, plan?.endDate]);
-
-  const calendarMonths = useMemo(() => {
-    if (!plan) return [];
-    return eachMonthOfInterval({
-      start: parseISO(plan.startDate),
-      end: parseISO(plan.endDate),
-    });
-  }, [plan?.startDate, plan?.endDate]);
-
-  const dateStatuses = useMemo<Record<string, DateStatus>>(() => {
-    const statusMap: Record<string, DateStatus> = {};
-
-    dates.forEach(date => {
-      if (includedPeople.length === 0) {
-        statusMap[date] = 'blank';
-        return;
-      }
-
-      const states = includedPeople.map(person => person.availability[date] ?? 'blank');
-
-      if (states.every(state => state === 'available')) {
-        statusMap[date] = 'available';
-      } else if (states.some(state => state === 'unavailable')) {
-        statusMap[date] = 'unavailable';
-      } else {
-        statusMap[date] = 'blank';
-      }
-    });
-
-    return statusMap;
-  }, [dates, includedPeople]);
-
-  const availableDates = useMemo(
-    () => dates.filter(date => dateStatuses[date] === 'available'),
-    [dates, dateStatuses]
-  );
-
-  const unavailableDates = useMemo(
-    () => dates.filter(date => dateStatuses[date] === 'unavailable'),
-    [dates, dateStatuses]
-  );
 
   if (!plan) {
     return (
@@ -181,13 +130,48 @@ export function PlanCalendarScreen() {
     );
   }
 
+  const dates = useMemo(() => getDates(plan.startDate, plan.endDate), [plan.startDate, plan.endDate]);
+
+  const excludedSet = new Set(localExcludedPeople);
+
+  const includedPeople = plan.people.filter((person) => !excludedSet.has(person.id));
+
+  const getAggregateDateStatus = (date: string): DateStatus => {
+    if (includedPeople.length === 0) return 'blank';
+
+    const states = includedPeople.map((person) => person.availability[date] ?? 'blank');
+
+    if (states.some((state) => state === 'unavailable')) {
+      return 'unavailable';
+    }
+
+    if (states.some((state) => state === 'available')) {
+      return 'available';
+    }
+
+    return 'blank';
+  };
+
+  const availableDates = dates.filter((date) => getAggregateDateStatus(date) === 'available');
+  const unavailableDates = dates.filter((date) => getAggregateDateStatus(date) === 'unavailable');
+
+  const planInterval = {
+    start: parseISO(plan.startDate),
+    end: parseISO(plan.endDate),
+  };
+
+  const calendarMonths = eachMonthOfInterval({
+    start: parseISO(plan.startDate),
+    end: parseISO(plan.endDate),
+  });
+
   const handleAddPerson = () => {
     const name = newPersonName.trim();
     if (!name) {
       setAddError('Enter a name.');
       return;
     }
-    if (plan.people.some(p => p.name.toLowerCase() === name.toLowerCase())) {
+    if (plan.people.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
       setAddError('That name is already in this plan.');
       return;
     }
@@ -197,11 +181,62 @@ export function PlanCalendarScreen() {
   };
 
   const toggleLocalPersonExclusion = (personId: string) => {
-    setLocalExcludedPeople(prev =>
+    setLocalExcludedPeople((prev) =>
       prev.includes(personId)
-        ? prev.filter(id => id !== personId)
+        ? prev.filter((id) => id !== personId)
         : [...prev, personId]
     );
+  };
+
+  const startEditingPerson = (personId: string, currentName: string) => {
+    setEditingPersonId(personId);
+    setEditingPersonName(currentName);
+  };
+
+  const commitPersonRename = async (personId: string, originalName: string) => {
+    const trimmed = editingPersonName.trim();
+
+    if (!trimmed) {
+      setEditingPersonName(originalName);
+      setEditingPersonId(null);
+      return;
+    }
+
+    if (
+      plan.people.some(
+        (p) => p.id !== personId && p.name.toLowerCase() === trimmed.toLowerCase()
+      )
+    ) {
+      setEditingPersonName(originalName);
+      setEditingPersonId(null);
+      return;
+    }
+
+    if (trimmed !== originalName) {
+      await renamePerson(plan.id, personId, trimmed);
+    }
+
+    setEditingPersonId(null);
+    setEditingPersonName('');
+  };
+
+  const cancelPersonRename = (originalName: string) => {
+    setEditingPersonName(originalName);
+    setEditingPersonId(null);
+  };
+
+  const bulkSet = (state: CellState | 'blank') => {
+    const cells = Array.from(selectedCells).map((key) => {
+      const [personId, date] = key.split(':');
+      return { personId, date };
+    });
+
+    bulkUpdateCells(plan.id, cells, state);
+    setSelectedCells(new Set());
+  };
+
+  const clearSelection = () => {
+    setSelectedCells(new Set());
   };
 
   const openEdit = () => {
@@ -302,26 +337,57 @@ export function PlanCalendarScreen() {
 
       <div className="flex-1 flex overflow-hidden">
         <div className="flex-1 flex flex-col overflow-hidden p-4 gap-3">
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col gap-1 flex-shrink-0 min-w-0">
+            <div className="flex items-center gap-2 flex-shrink-0 min-w-0 overflow-x-auto whitespace-nowrap">
               <input
                 type="text"
                 placeholder="Add person…"
                 value={newPersonName}
-                onChange={e => {
+                onChange={(e) => {
                   setNewPersonName(e.target.value);
                   setAddError('');
                 }}
-                onKeyDown={e => e.key === 'Enter' && handleAddPerson()}
-                className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 bg-white transition-colors w-44"
+                onKeyDown={(e) => e.key === 'Enter' && handleAddPerson()}
+                className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 bg-white transition-colors w-44 flex-shrink-0"
               />
               <button
                 onClick={handleAddPerson}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-900 hover:bg-gray-700 text-white rounded-lg text-sm transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-900 hover:bg-gray-700 text-white rounded-lg text-sm transition-colors flex-shrink-0"
               >
                 <UserPlus size={14} /> Add
               </button>
+
+              {selectedCells.size > 1 && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-200 rounded-lg flex-shrink-0">
+                  <span className="text-blue-700 text-sm">{selectedCells.size} cells selected</span>
+                  <button
+                    onClick={() => bulkSet('available')}
+                    className="flex items-center gap-1 px-2 py-1 bg-green-100 hover:bg-green-200 text-green-700 rounded text-sm transition-colors"
+                  >
+                    <Check size={13} /> Mark Available
+                  </button>
+                  <button
+                    onClick={() => bulkSet('unavailable')}
+                    className="flex items-center gap-1 px-2 py-1 bg-red-100 hover:bg-red-200 text-red-600 rounded text-sm transition-colors"
+                  >
+                    <X size={13} /> Mark Unavailable
+                  </button>
+                  <button
+                    onClick={() => bulkSet('blank')}
+                    className="flex items-center gap-1 px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded text-sm transition-colors"
+                  >
+                    <Minus size={13} /> Clear
+                  </button>
+                  <button
+                    onClick={clearSelection}
+                    className="text-blue-400 hover:text-blue-600 text-sm transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
             </div>
+
             {addError && <span className="text-red-500 text-sm">{addError}</span>}
             {plan.people.length === 0 && !addError && (
               <span className="text-gray-400 text-sm">Start by adding people to this plan</span>
@@ -343,6 +409,8 @@ export function PlanCalendarScreen() {
                 people={plan.people}
                 dates={dates}
                 excludedPeople={localExcludedPeople}
+                selectedCells={selectedCells}
+                setSelectedCells={setSelectedCells}
               />
             </div>
           )}
@@ -351,7 +419,7 @@ export function PlanCalendarScreen() {
         <div className="w-56 flex-shrink-0 border-l border-gray-200 bg-white overflow-y-auto flex flex-col">
           <div className="border-b border-gray-100">
             <button
-              onClick={() => setFilterOpen(f => !f)}
+              onClick={() => setFilterOpen((f) => !f)}
               className="w-full flex items-center justify-between px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
             >
               <span className="uppercase tracking-wide text-xs text-gray-500">People Filter</span>
@@ -361,13 +429,15 @@ export function PlanCalendarScreen() {
                 <ChevronDown size={14} className="text-gray-400" />
               )}
             </button>
+
             {filterOpen && (
               <div className="px-4 pb-4 space-y-2">
                 {plan.people.length === 0 ? (
                   <p className="text-xs text-gray-400">No people added yet</p>
                 ) : (
-                  plan.people.map(person => {
+                  plan.people.map((person) => {
                     const isExcluded = excludedSet.has(person.id);
+                    const isEditing = editingPersonId === person.id;
 
                     return (
                       <div key={person.id} className="flex items-center gap-2.5 group">
@@ -382,17 +452,53 @@ export function PlanCalendarScreen() {
                           {!isExcluded && <Check size={10} className="text-white stroke-[3]" />}
                         </div>
 
-                        <span
-                          className={`flex-1 min-w-0 text-sm transition-colors ${
-                            isExcluded ? 'text-gray-300 line-through' : 'text-gray-700'
-                          }`}
-                        >
-                          {person.name}
-                        </span>
+                        {isEditing ? (
+                          <input
+                            autoFocus
+                            type="text"
+                            value={editingPersonName}
+                            onChange={(e) => setEditingPersonName(e.target.value)}
+                            onBlur={() => {
+                              void commitPersonRename(person.id, person.name);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                e.currentTarget.blur();
+                              }
+                              if (e.key === 'Escape') {
+                                e.preventDefault();
+                                cancelPersonRename(person.name);
+                              }
+                            }}
+                            className="flex-1 min-w-0 text-sm border border-blue-300 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-blue-100"
+                          />
+                        ) : (
+                          <span
+                            onDoubleClick={() => startEditingPerson(person.id, person.name)}
+                            className={`flex-1 min-w-0 text-sm transition-colors cursor-text ${
+                              isExcluded ? 'text-gray-300 line-through' : 'text-gray-700'
+                            }`}
+                            title="Double-click to rename"
+                          >
+                            {person.name}
+                          </span>
+                        )}
+
+                        {!isEditing && (
+                          <button
+                            onClick={() => startEditingPerson(person.id, person.name)}
+                            className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-600 transition-colors"
+                            title="Rename person"
+                          >
+                            <Pencil size={12} />
+                          </button>
+                        )}
                       </div>
                     );
                   })
                 )}
+
                 {plan.people.length > 0 && (
                   <p className="text-xs text-gray-400 mt-2 leading-relaxed">
                     Uncheck to exclude from the summary calculation
@@ -412,11 +518,14 @@ export function PlanCalendarScreen() {
                 <p className="text-xs text-gray-400">Include at least one person in the filter</p>
               ) : (
                 <div className="space-y-4">
-                  {calendarMonths.map(monthDate => {
+                  {calendarMonths.map((monthDate) => {
                     const monthDays = getMonthGridDays(monthDate);
 
                     return (
-                      <div key={format(monthDate, 'yyyy-MM')} className="rounded-xl border border-gray-100 p-2.5">
+                      <div
+                        key={format(monthDate, 'yyyy-MM')}
+                        className="rounded-xl border border-gray-100 p-2.5"
+                      >
                         <p className="text-sm text-gray-700 mb-2">{format(monthDate, 'MMMM yyyy')}</p>
 
                         <div className="grid grid-cols-7 gap-1 mb-1">
@@ -431,11 +540,11 @@ export function PlanCalendarScreen() {
                         </div>
 
                         <div className="grid grid-cols-7 gap-1">
-                          {monthDays.map(day => {
+                          {monthDays.map((day) => {
                             const dateKey = format(day, 'yyyy-MM-dd');
                             const isInMonth = isSameMonth(day, monthDate);
-                            const isInPlan = !!planInterval && isWithinInterval(day, planInterval);
-                            const status = isInPlan ? dateStatuses[dateKey] : 'blank';
+                            const isInPlan = isWithinInterval(day, planInterval);
+                            const status = isInPlan ? getAggregateDateStatus(dateKey) : 'blank';
 
                             let dayClasses =
                               'h-7 rounded-md text-[11px] flex items-center justify-center border transition-colors';
@@ -490,7 +599,7 @@ export function PlanCalendarScreen() {
                 </div>
               ) : (
                 <div className="space-y-1.5">
-                  {availableDates.map(date => (
+                  {availableDates.map((date) => (
                     <div
                       key={date}
                       className="flex items-center gap-2 px-2.5 py-1.5 bg-green-50 border border-green-100 rounded-lg"
@@ -543,7 +652,7 @@ export function PlanCalendarScreen() {
         >
           <div
             className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-md"
-            onClick={e => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-gray-900 mb-5">Edit Plan</h3>
             <div className="space-y-4">
@@ -553,7 +662,7 @@ export function PlanCalendarScreen() {
                   autoFocus
                   type="text"
                   value={editName}
-                  onChange={e => {
+                  onChange={(e) => {
                     setEditName(e.target.value);
                     setEditError('');
                   }}
@@ -575,7 +684,10 @@ export function PlanCalendarScreen() {
                       : 'border-gray-200 bg-gray-50 text-gray-400 hover:border-gray-300 hover:bg-gray-100'
                   }`}
                 >
-                  <Calendar size={14} className={editStart || editEnd ? 'text-indigo-500' : 'text-gray-400'} />
+                  <Calendar
+                    size={14}
+                    className={editStart || editEnd ? 'text-indigo-500' : 'text-gray-400'}
+                  />
                   {editStart && editEnd ? (
                     <span className="text-gray-800">
                       {formatDisplay(editStart)}
@@ -593,7 +705,7 @@ export function PlanCalendarScreen() {
                   {(editStart || editEnd) && (
                     <button
                       type="button"
-                      onClick={e => {
+                      onClick={(e) => {
                         e.stopPropagation();
                         setEditStart('');
                         setEditEnd('');
